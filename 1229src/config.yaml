@@ -1,0 +1,28 @@
+compute_environment: LOCAL_MACHINE
+deepspeed_config:
+  deepspeed_hostfile: ./hostfile # hostfile的路径
+  deepspeed_multinode_launcher: pdsh # 使用pdsh
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 4
+  offload_optimizer_device: none
+  offload_param_device: none
+  zero3_init_flag: false
+  zero_stage: 2
+distributed_type: DEEPSPEED
+dynamo_config: {}
+fsdp_config: {}
+megatron_lm_config: {}
+downcast_bf16: 'no'
+machine_rank: 0
+main_process_ip: <host_ip>  # 主机地址
+main_process_port: <host_port>  # 端口
+main_training_function: main
+mixed_precision: fp16
+num_machines: 2 # GPU集群中node节点数
+num_processes: 1  # 每台机器的gpu的数量
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

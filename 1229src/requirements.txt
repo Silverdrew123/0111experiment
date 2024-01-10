@@ -1,0 +1,23 @@
+accelerate==0.19.0
+apex==0.9.10dev
+datasets==2.12.0
+evaluate==0.4.0
+# fairscale==0.4.13
+filelock==3.0.12
+higher==0.2.1
+ipdb==0.13.9
+numpy==1.19.4
+optuna==3.2.0
+packaging==23.1
+pandas==1.1.5
+peft==0.3.0
+scipy==1.5.4
+sentence_transformers==0.4.0
+torch==1.13.0
+torch_xla==1.0
+tqdm==4.62.1
+transformers==4.26.1
+utils==1.0.1
+
+
+ pip install apex==0.9.10dev -i https://pypi.tuna.tsinghua.edu.cn/simple

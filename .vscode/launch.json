@@ -1,0 +1,58 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 当前文件",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [    
+                "--task_name", "sst-5",
+                "--data_dir", "data/selsst-5",
+                "--overwrite_output_dir",
+                "--do_train",
+                "--output_dir", "result/test",
+                "--overwrite_cache" ,
+                "--do_eval" ,
+                "--do_predict" , 
+                "--model_name_or_path","model/roberta-large" ,
+                "--few_shot_type","prompt-demo" ,
+                "--num_k", "32", 
+                "--max_seq_length", "128", 
+                "--per_device_train_batch_size", "4", 
+                "--per_device_eval_batch_size","4", 
+                "--learning_rate","5e-6", 
+                "--logging_steps", "500", 
+                "--eval_steps", "500", 
+                "--num_train_epochs","10000" ,
+                "--seed", "1",
+                "--psuedo_selection_opt", "confidence",
+                "--soft_label", "1",
+                "--is_semi", "1" ,
+                "--un_train_batch_size", "16", 
+                "--self_training_start_iter", "400", 
+                "--meta_train_batch_size", "4", 
+                "--update_teacher_steps", "1000", 
+                "--finetune_teacher_epoch", "50", 
+                "--self_training_session", "1", 
+                "--update_component", "none",
+                "--adapter_dim", "128",
+                "--adapter_choice", "none", 
+                "--semi_finetune",
+                "--re_init" ,
+                "--use_last_epoch","true",
+                "--contrast_training","0",
+                "--template_list_new","*cls**sent_0*_it's*mask*.*sep+*",
+                "--protoweight", "1",
+                "--mix", "0",
+                "--protonet", "1"
+
+        ]
+        }
+    ]
+}
