@@ -43,7 +43,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import RandomSampler, SequentialSampler
 from models import LMForPromptFinetuning, BertForPromptFinetuning, RobertaForPromptFinetuning, DebertaForPromptFinetuning, resize_token_type_embeddings
 import higher
-import deepspeed
+# import deepspeed
 import transformers
 from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, EvalPrediction
 from transformers.data.data_collator import DataCollator, DataCollatorWithPadding, default_data_collator
@@ -260,6 +260,7 @@ class Trainer(transformers.Trainer):
             train_dataset: Optional[Dataset] = None,
             train_demo_dataset: Optional[Dataset] = None,
             another_train_dataset:Optional[Dataset] = None,
+            proto_dataset:Optional[Dataset] = None,
             un_train_dataset: Optional[Dataset] = None,
             eval_dataset: Optional[Dataset] = None,
             test_dataset: Optional[Dataset] = None,
@@ -293,6 +294,7 @@ class Trainer(transformers.Trainer):
         self.test_dataset=test_dataset
         self.accelerator = Accelerator(cpu=self.args.cpu)
         self.another_train_dataset=another_train_dataset
+        self.proto_dataset=proto_dataset
 
         assert (
                 model is not None or model_init is not None
@@ -734,9 +736,9 @@ class Trainer(transformers.Trainer):
         # [num_of_all_text_tokens, embed_dim]
         return (torch.pow(pro.unsqueeze(0) - unlabeldata.unsqueeze(1), 2)).sum(2)
 
-    def pseudo_data_selection(self, model, un_inputs, un_meta,unembedding,learning_rate=None, use_soft_label=None):
+    def pseudo_data_selection(self, model, un_inputs, un_meta,unembedding,learning_rate=None, use_soft_label=None,student_num=None):
         loss_weight = None
-        proto=self.proto#wxy
+        proto=self.proto_list[student_num]#wxy
         if proto!=None:
             dis=[]
             if protonet:
@@ -937,7 +939,7 @@ class Trainer(transformers.Trainer):
             raise ValueError("Trainer: un_training requires a un_train_dataset.")
         sampler = self.proto_sampler()
 
-        self.proto_dataset = copy.deepcopy(self.train_dataset)
+        # self.proto_dataset = copy.deepcopy(self.proto_dataset)
         # self.meta_train_dataset = copy.deepcopy(self.train_dataset)
         # np.random.shuffle(self.proto_dataset.example_idx)
         self.proto_train_num = len(self.proto_dataset.example_idx)
@@ -1072,7 +1074,7 @@ class Trainer(transformers.Trainer):
                 else:
                     un_meta['pseudo_label'] = hard_labels
 
-                loss_weight = self.pseudo_data_selection(model, un_inputs, un_meta,unembedding=un_embedding)#wxy
+                loss_weight = self.pseudo_data_selection(model, un_inputs, un_meta,unembedding=un_embedding,student_num=student_num)#wxy
         
                 un_loss,unembedding = self.compute_un_loss(model, un_inputs, loss_weight=loss_weight)
                 loss = loss + un_loss
@@ -1085,12 +1087,12 @@ class Trainer(transformers.Trainer):
                     un_embedding=model.lm_model.proto_head(unembedding)        
                     for i in range(len(hard_labels)):
                         if max(soft_labels[i])>0.5:
-                            mixembedding=(un_embedding[i]+self.proto[hard_labels[i]])/2
+                            mixembedding=(un_embedding[i]+self.proto_list[student_num][hard_labels[i]])/2
                             
                             if 1:
                                 #加入protohead后的版本，embedding是原型输出。mix是原型向量和mask过了protohead的值进行mix
-                                dists = euclidean_dist(mixembedding.unsqueeze(0), self.proto)
-                                log_p_y = F.log_softmax(-dists, dim=1).view(len(self.proto), -1).squeeze()
+                                dists = euclidean_dist(mixembedding.unsqueeze(0), self.proto_list[student_num])
+                                log_p_y = F.log_softmax(-dists, dim=1).view(len(self.proto_list[student_num]), -1).squeeze()
                                 loss_1=-log_p_y[hard_labels[i]]
                             if 0:
                                 #这一部分是原来没有加protohead的版本，embedding是robert的mask输出，过一个head映射到词表，然后根据类别在词表的id找到每个类别的当前输出，得到一个（len,class）的向量logits,在和label做一个交叉熵函数
@@ -1187,20 +1189,27 @@ class Trainer(transformers.Trainer):
 
 
         if self.teacher_model[student_num].data_args.prompt:
-            self.model = model_fn(config, self.teacher_model[student_num].model_args, self.teacher_model[student_num].data_args)
+            self.model_list[student_num] = model_fn(config, self.teacher_model[student_num].model_args, self.teacher_model[student_num].data_args)
         else:
-            self.model = model_fn.from_pretrained(
+            self.model_list[student_num] = model_fn.from_pretrained(
                 self.teacher_model[student_num].model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in self.teacher_model[student_num].model_args.model_name_or_path),
                 config=config,
                 cache_dir=self.teacher_model[student_num].model_args.cache_dir,
             )
-            self.model.model_args = self.teacher_model[student_num].model_args
-            self.model.data_args = self.teacher_model[student_num].data_args
+            self.model_list[student_num].model_args = self.teacher_model[student_num].model_args
+            self.model_list[student_num].data_args = self.teacher_model[student_num].data_args
         lora=1
         if lora:
             peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=8, lora_alpha=16, lora_dropout=0.1)
-            self.model=get_peft_model(self.model, peft_config)
+            self.model_list[student_num]=get_peft_model(self.model, peft_config)
+            # if student_num:
+            #     self.model_list[student_num].load_state_dict(torch.load('result/cotraining/aug04/checkpoint/50epoch_acc0.55')['model_state_dict'],strict=False)
+            #     logger.info("init from pretrained 2")
+            # else:
+            #     self.model_list[student_num].load_state_dict(torch.load('result/cotraining/aug123/checkpoint/50epoch_acc0.575')['model_state_dict'],strict=False)
+            #     logger.info("init from pretrained 1")
+        
         self.wipe_memory(student_num)
 
 
@@ -1211,8 +1220,9 @@ class Trainer(transformers.Trainer):
 
     def wipe_memory(self,student_num):  # DOES WORK
         self._optimizer_to(torch.device('cpu'),student_num)
-        # del self.optimizer
-        del self.optim[student_num]
+        self.optimizer=self.optim[student_num]
+        del self.optimizer
+        # del self.optim[student_num]
         self.clear_memory()
         # self.optimizer=None
         self.optim[student_num]=None
@@ -1345,10 +1355,10 @@ class Trainer(transformers.Trainer):
         train_dataloader = self.get_train_dataloader()
 
         num_update_steps_per_epoch = len(train_dataloader) // self.args.gradient_accumulation_steps
-
+        args.self_training_start_epoch=0
         self_training_start_iter = self.args.self_training_start_epoch * int(
             len(train_dataloader) // self.args.gradient_accumulation_steps)
-
+        self.args.finetune_teacher_epoch=0
         finetune_teacher_steps = self.args.finetune_teacher_epoch * int(
             len(train_dataloader) // self.args.gradient_accumulation_steps)
 
@@ -1421,9 +1431,9 @@ class Trainer(transformers.Trainer):
                 self.model_list[0], self.optim[0], self.model_list[1], self.optim[1],self.train_dataloader, self.another_train_dataloader,self.un_train_dataloader
             )
         else:
-            self.model, self.optimizer, self.train_dataloader,  self.meta_train_dataloader, self.meta_valid_dataloader, self.un_train_dataloader, self.demo_train_dataloader\
+            self.model, self.optimizer, self.train_dataloader,  self.meta_train_dataloader, self.meta_valid_dataloader, self.un_train_dataloader, self.demo_train_dataloader,self.another_train_dataloader\
                 = self.accelerator.prepare(
-                self.model, self.optimizer, self.train_dataloader,  self.meta_train_dataloader, self.meta_valid_dataloader, self.un_train_dataloader, self.demo_train_dataloader
+                self.model, self.optimizer, self.train_dataloader,  self.meta_train_dataloader, self.meta_valid_dataloader, self.un_train_dataloader, self.demo_train_dataloader,self.another_train_dataloader
             )
             
 
@@ -1503,9 +1513,9 @@ class Trainer(transformers.Trainer):
         logging_loss_scalar = 0.0
         for i in range(2):
             self.model_list[i].zero_grad()
-            self.dataloader=[]
-            self.dataloader.append(self.train_dataloader)
-            self.dataloader.append(self.another_train_dataloader)
+        self.dataloader=[]
+        self.dataloader.append(self.train_dataloader)
+        self.dataloader.append(self.another_train_dataloader)
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
@@ -1525,7 +1535,12 @@ class Trainer(transformers.Trainer):
         self.output_list=[None,None]
         self.output_list[0]=self.args.output_dir
         self.output_list[1]=self.args.output_dir2
-                    
+        directory1=os.path.join(self.output_list[0],'checkpoint')
+        directory2=os.path.join(self.output_list[1],'checkpoint')
+        if not os.path.exists(directory1):
+            os.makedirs(directory1)
+            os.makedirs(directory2)
+
     
                 
                 
@@ -1563,11 +1578,19 @@ class Trainer(transformers.Trainer):
                         pro_train_iter = self.pro_dataloader.__iter__()
                         self.proinputs = next(pro_train_iter)
                 delta = (self.global_step - self_training_start_iter)
-                
                 for student_num in range(2):
+                    if self.global_step==0:
+                        self.model=self.model_list[student_num]
+                        self.save_model(self.output_list[student_num])
                     # self.model=self.model_list[student_num]
                     # self.optimizer=self.optim[student_num]
                     # self.lr_scheduler=self.lr_scheduler_list[student_num]
+                    if student_num:
+                        try:
+                            inputs = next(train_iter)
+                        except:
+                            train_iter = self.dataloader[1].__iter__()
+                            inputs = next(train_iter)
                     if self.args.use_last_epoch and self.global_step >self_training_start_iter and  self.global_step%200==0:
                         proto=self.prototype(self.dataloader[student_num])
                         self.proto_list[student_num]=proto
@@ -1618,6 +1641,11 @@ class Trainer(transformers.Trainer):
                                 if 1 and self.objective[student_num]>=self.teacherobjective[student_num]:
                                     self.teacherobjective[student_num]=self.objective[student_num]
                                     self.update_teacher(self.model_list[student_num],student_num)
+                                    # self.model=self.model_list[student_num]
+                                    # logger.info("start  self.model_list{} test result:".format(student_num))
+                                    # test=self.evaluate(eval_dataset=self.test_dataset)
+                                    # testobj=self.dev_objective(test.metrics)
+                                    # logger.info("now wxy teacher {} test result: {}".format(student_num,testobj))
 
                             if self.args.re_init or self.args.psuedo_selection_opt == 'meta':
                                 #这里需要修改，重新加入lora之后冻结了参数
@@ -1721,18 +1749,28 @@ class Trainer(transformers.Trainer):
                         if self.args.use_last_epoch: # and not (self.args.semi_finetune and self.args.is_semi == 1):
                             continue
                         if self.global_step % self.args.eval_steps == 0 and self.global_step>0:
+                            self.model=self.model_list[student_num]
                             output = self.evaluate()
                             metrics = output.metrics
                             objective = self.dev_objective(metrics)
+                            
                             logger.info("wxy student {} Dev result:  {}".format(student_num,objective))
                             if self.global_step % 1000 == 0 and self.global_step>0:
+                                self.model=self.model_list[student_num]
                                 test=self.evaluate(eval_dataset=self.test_dataset)
                                 testobj=self.dev_objective(test.metrics)
                                 logger.info("wxy student {} test result: {}".format(student_num,testobj))
+                                torch.save({
+                                'epoch': epoch, # 保存迭代次数
+                                'model_state_dict': self.model_list[student_num].state_dict(), # 模型的状态
+                                'optimizer_state': self.optim[student_num].state_dict(), # 优化器的状态
+                                'acc':testobj,
+                            }, os.path.join(self.output_list[student_num],'checkpoint/{}epoch_acc{}'.format(epoch,testobj)))
                             if objective >= self.objective[student_num]:
                                 logger.info("wxy student {} self.teacher objective result: {}".format(student_num,self.teacherobjective[student_num]))
                                 logger.info("Best student {} dev result: {}".format(student_num,objective))
                                 self.objective[student_num] = objective
+                                self.model=self.model_list[student_num]
                                 self.save_model(self.output_list[student_num])
                                 
                             
@@ -1754,14 +1792,18 @@ class Trainer(transformers.Trainer):
                 if self.args.is_semi == 1 and (delta >= 0):
                     #del un_inputs['labels']
 
-                    self.consistent_embedding[0] = self.model_list[0](**un_inputs)[-1]
-                    self.consistent_embedding[1] = self.model_list[1](**un_inputs)[-1]
+                    self.consistent_embedding[0] = self.model_list[0](**un_inputs)[1]
+                    self.consistent_embedding[1] = self.model_list[1](**un_inputs)[1]
+                    probs1 = F.softmax(self.consistent_embedding[0], dim=1)
+                    probs2 = F.softmax(self.consistent_embedding[1], dim=1)
                     for student_num in range(2):
                         mutual_loss = 0.0
                         loss_mse = nn.MSELoss()
                         for other_student in range(2):
                             if other_student != student_num:
-                                mutual_loss += loss_mse(self.consistent_embedding[student_num],self.consistent_embedding[other_student].detach())
+                                # mutual_loss += loss_mse(self.consistent_embedding[student_num],self.consistent_embedding[other_student].detach())
+                                mutual_loss =  F.kl_div(probs1.log(), probs2, reduction='batchmean')
+                        logger.info("mutual_loss:{}".format(mutual_loss))
                         # mutual_loss.backward()
                         self.accelerator.backward(mutual_loss,retain_graph=True)
                         
@@ -1770,7 +1812,7 @@ class Trainer(transformers.Trainer):
                         self.model_list[student_num].zero_grad()
 
                         train_loss[student_num] += mutual_loss.item() * args.gradient_accumulation_steps
-                    self.clear_memory()
+                    # self.clear_memory()
             
             
             if self.args.use_last_epoch:  # and not (self.args.semi_finetune and self.args.is_semi == 1):
@@ -1778,7 +1820,7 @@ class Trainer(transformers.Trainer):
 
             if self.args.is_semi == 1:
                 continue
-
+            self.model=self.model_list[student_num]
             output = self.evaluate()
             metrics = output.metrics
 
@@ -1789,6 +1831,7 @@ class Trainer(transformers.Trainer):
                 logger.info("self.objective result: {}".format(self.objective))
                 logger.info("Best dev result: {}".format(objective))
                 self.objective = objective
+                self.model=self.model_list[0]
                 self.save_model(self.args.output_dir)
 
             if self.args.max_steps > 0 and self.global_step > self.args.max_steps or \
@@ -1818,7 +1861,7 @@ class Trainer(transformers.Trainer):
         self._memory_tracker.stop_and_update_metrics(metrics)
 
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
-        return TrainOutput(self.global_step, tr_loss / self.state.global_step, metrics)
+        return TrainOutput(self.global_step, tr_loss[0] / self.state.global_step, metrics)
         # return TrainOutput(self.global_step, tr_loss / self.global_step), self.objective
 
     """
